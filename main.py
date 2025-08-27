@@ -24,15 +24,19 @@ import classes as cl
 import logic as lc
 import pandas as pd
 
-user_list = {}
-server_channel_list = {}
-
+# -- class definitions --
+class User:
+    def __init__(self, userID: int=-1, guildID_list: list=[], activity_list: dict={}):
+        self.userID = userID
+        self.guildID_list = guildID_list
+        self.activity_list = activity_list
 
 class BotClient(discord.Client):
     def __init__(self):
         intents=discord.Intents.default()
         intents.guilds = True
         intents.messages = True
+        intents.members = True
 
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
@@ -55,6 +59,21 @@ class BotClient(discord.Client):
         if guild.system_channel:
             await guild.system_channel.send("Please set my working channel with '/setchannel' (Admins only)")
 
+# -- funcion definitions --
+def PrintUserList(list: list[User]):
+    for user in list:
+        print(user.userID, user.activity_list, user.guildID_list)
+
+def PublishDesires(users: list[User], guilds: dict[str, int]):
+    for guild in guilds:
+        pass #TODO
+
+
+
+# -- globals --
+user_list: list[User] = []
+server_channel_list: dict[str, int] = {}
+
 Bot = BotClient()
 
 @Bot.tree.command(name="hello_world", description="Say hello")
@@ -66,29 +85,43 @@ async def hello_world(interaction: discord.Interaction):
         await response.delete(delay=10)
 
 @Bot.tree.command(name="add", description="add an activity to the list")
-@app_commands.describe(activity="name of activity")
-async def add(interaction: discord.Interaction, activity: str):
+@app_commands.describe(activity="name of activity", minimum_people="minimum number of people")
+async def add(interaction: discord.Interaction, activity: str, minimum_people: int):
     if interaction.channel_id == server_channel_list[interaction.guild_id]:
         userID = interaction.user.id
         userName = await Bot.fetch_user(userID)
         guildID = interaction.guild_id
 
         activity_value = activity.upper()
-        user_list.setdefault(userID, {}).setdefault("activity", [])
-        user_list.setdefault(userID, {}).setdefault("guilidID", [])
+        user_new = True
         
-        if activity_value not in user_list[userID]["activity"]:
-            user_list[userID]["activity"].append(activity_value)
+        for user in user_list:
+            if user.userID == userID:
+                user_new = False
+                if activity_value not in user.activity_list:
+                    user.activity_list[activity_value] = minimum_people
 
-            if guildID not in user_list[userID]["guilidID"]:
-                user_list[userID]["guilidID"].append(guildID)
+                    if guildID not in user.guildID_list:
+                        for guild in Bot.guilds: # updates all guild IDs
+                            if guild.get_member(userID):
+                                user.guildID_list.append(guildID)
 
-            await interaction.response.send_message(f"added {activity} to {userName.global_name} in {}")
-        else:
-            await interaction.response.send_message(f"{activity} already added to {userName.global_name}")
+                    await interaction.response.send_message(f"added {activity} to {userName.global_name}")
+                else:
+                    user.activity_list[activity_value] = minimum_people
+                    await interaction.response.send_message(f"{activity} added to {userName.global_name}")
+                break
+        
+        if user_new:
+            new_user = User(userID,[guildID],{activity_value: minimum_people})
+            user_list.append(new_user)
+            print(user_list[-1].userID)
+            await interaction.response.send_message(f"added {activity} to new user {userName.global_name}")
+                
 
         if DEVELOPEMENT:
-            print(user_list)
+            print("user_list:")
+            PrintUserList(user_list)
 
 @Bot.tree.command(name="remove", description="remove an activity from the list")
 @app_commands.describe(activity="name of activity")
@@ -99,17 +132,21 @@ async def remove(interaction: discord.Interaction, activity: str):
         
         activity_value = activity.upper()
 
-        if activity_value in user_list.get(userID, {}).get("activity", []):
-            user_list[userID]["activity"].remove(activity_value)
-            await interaction.response.send_message(f"removed {activity} from {userName.global_name}")
-        else:
-            await interaction.response.send_message(f"did not find {activity} from {userName.global_name}")
+        for user in user_list:
+            if user.userID == userID:
+                if activity_value in user.activity_list:
+                    del user.activity_list[activity_value]
+                    await interaction.response.send_message(f"removed {activity} from {userName.global_name}")
+                else:
+                    await interaction.response.send_message(f"did not find {activity} from {userName.global_name}")
+                break
 
         if DEVELOPEMENT:
-            print(user_list)
+            print("user_list:")
+            PrintUserList(user_list)
 
 @Bot.tree.command(name="setchannel", description="Set the channel to be used in (Admins only)")
-@app_commands.describe(activity="Set the channel to be used in (Admins only)")
+@app_commands.describe(channel="Set the channel to be used in (Admins only)")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     guildID = interaction.guild_id
@@ -125,18 +162,20 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
     if DEVELOPEMENT:
         response = await interaction.original_response()
         await response.delete(delay=10)
+        print("server_channel_list",server_channel_list)
 
-@tasks.loop(minutes=1)
-async def list_of_interests(client: BotClient):
-    if DEVELOPEMENT: print("running loop")
-    for guildID, channelID in server_channel_list.items():
-        try:
-            channel = client.get_channel(channelID)
-            if channel: 
-                msg = await channel.send("heartbeat")
-                await msg.delete(delay=10)
-        except:
-            print(f"no channel set for {client.get_guild(guildID)}")
+if DEVELOPEMENT:
+    @tasks.loop(minutes=1)
+    async def list_of_interests(client: BotClient):
+        for guildID, channelID in server_channel_list.items():
+            try:
+                channel = client.get_channel(channelID)
+                if channel: 
+                    msg = await channel.send("heartbeat")
+                    await msg.delete(delay=30)
+            except:
+                print(f"no channel set for {client.get_guild(guildID)}")
+
 
 
 # -- run bot
