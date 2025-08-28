@@ -21,15 +21,16 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 import classes as cl
-import logic as lc
+import custom_logic as clc
 import pandas as pd
+from sortedcontainers import SortedDict
 
 # -- class definitions --
 class User:
     def __init__(self, userID: int=-1, guildID_list: list=[], activity_list: dict={}):
         self.userID = userID
         self.guildID_list = guildID_list
-        self.activity_list = activity_list
+        self.activity_list = SortedDict(activity_list)
 
 class BotClient(discord.Client):
     def __init__(self):
@@ -132,18 +133,15 @@ async def add(interaction: discord.Interaction, activity: str, minimum_people: i
         for user in user_list:
             if user.userID == userID:
                 user_new = False
-                if activity_value not in user.activity_list:
-                    user.activity_list[activity_value] = minimum_people
 
-                    if guildID not in user.guildID_list:
-                        for guild in Bot.guilds: # updates all guild IDs
-                            if guild.get_member(userID):
-                                user.guildID_list.append(guildID)
+                user.activity_list[activity_value] = minimum_people
 
-                    await interaction.response.send_message(f"added {activity} to {userName.global_name}")
-                else:
-                    user.activity_list[activity_value] = minimum_people
-                    await interaction.response.send_message(f"{activity} added to {userName.global_name}")
+                if guildID not in user.guildID_list:
+                    for guild in Bot.guilds:  # update all guild IDs
+                        if guild.get_member(userID):
+                            user.guildID_list.append(guildID)
+
+                await interaction.response.send_message(f"Added/Updated {activity} for {userName.global_name}")
                 break
         
         if user_new:
@@ -202,7 +200,7 @@ async def remove(interaction: discord.Interaction, activity: str):
                 break
 
         if DEVELOPEMENT:
-            print("user_list:")
+            print("\nuser_list:")
             PrintUserList(user_list)
 
 
@@ -242,13 +240,32 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
     if DEVELOPEMENT:
         response = await interaction.original_response()
         await response.delete(delay=10)
-        print("server_channel_list",server_channel_list)
+        print("\nserver_channel_list",server_channel_list)
 
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=3)
 async def matchmaker(client: BotClient):
+    for guildID, channelID in server_channel_list.items():
+            try:
+                channel = client.get_channel(channelID)
+                if channel: 
+                    msg = await channel.send("matching now ...")
+                    
+            except:
+                print(f"no channel set for {client.get_guild(guildID)}")
+    
+    activities = []
+    users = []
+
     for user in user_list:
-        user.activity_list
+        activities.append(list(user.activity_list.keys()))
+        users.append(user.userID)
+
+    all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities,users)
+    print()
+    for activity, count, who in all_matches:
+        print(f"{activity} x {count} in {who}")
+    
 
 
 if DEVELOPEMENT: # hearbeat task
