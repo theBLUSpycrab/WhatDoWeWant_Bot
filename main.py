@@ -2,6 +2,16 @@
 #import logging
 #logging.basicConfig(level=logging.INFO)
 
+# -- imports
+import discord
+from discord import app_commands
+from discord.ext import tasks
+import classes as cl
+import custom_logic as clc
+import pandas as pd
+from sortedcontainers import SortedDict
+from typing import Any
+
 # -- configuration (C style macros) --
 DEVELOPEMENT = True
 
@@ -16,22 +26,17 @@ DESIRED_CHANNEL_NAME = "What Do We Want"
 FUZZY_CHANNEL_NAME = False
 FUZZY_ACTIVITY_NAME = True
 
+
+
 # -- program start--
-import discord
-from discord import app_commands
-from discord.ext import tasks
-import classes as cl
-import custom_logic as clc
-import pandas as pd
-from sortedcontainers import SortedDict
+
+
+# -- globals --
+user_list: dict[int,dict[str,Any]] = {}
+server_channel_list = {}
+matches = []
 
 # -- class definitions --
-class User:
-    def __init__(self, userID: int=-1, guildID_list: list=[], activity_list: dict={}):
-        self.userID = userID
-        self.guildID_list = guildID_list
-        self.activity_list = SortedDict(activity_list)
-
 class BotClient(discord.Client):
     def __init__(self):
         intents=discord.Intents.default()
@@ -54,27 +59,36 @@ class BotClient(discord.Client):
                 await cmd.delete()
             await self.tree.sync()
         
-        list_of_interests.start(self)
-        matchmaker.start(self)
+        #list_of_interests.start(self)
+        PublishDesires.start(users = user_list, guilds = server_channel_list, client = self)
 
     async def on_guild_join(self, guild):
         if guild.system_channel:
             await guild.system_channel.send("Please set my working channel with '/setchannel' (Admins only)")
 
+
 # -- funcion definitions --
-def PrintUserList(list: list[User]):
+def create_user(userID: int = None, guildID_list: list = None, activity_list: dict = None):
+    return {
+        "userID": userID,
+        "guildID_list": guildID_list or [],
+        "activity_list": SortedDict(activity_list or {})
+    }
+
+def PrintUserList(list: dict):
     for user in list:
-        print(user.userID, user.activity_list, user.guildID_list)
-
-def PublishDesires(users: list[User], guilds: dict[int, int]):
-    for guild in guilds:
-        pass #TODO
+        print(user)
 
 
+async def matchmaker_per_server(matchlist: list, users: dict):
+    for activity, count, match_IDs in matches:
+        needed_count = int('inf')
+        for users[match_IDs] in match_IDs:
+            needed_count = users[match_IDs]["activity_list"][activity]
+            
 
-# -- globals --
-user_list: list[User] = []
-server_channel_list = {}
+
+
 
 Bot = BotClient()
 
@@ -128,28 +142,23 @@ async def add(interaction: discord.Interaction, activity: str, minimum_people: i
         guildID = interaction.guild_id
 
         activity_value = activity.upper()
-        user_new = True
-        
-        for user in user_list:
-            if user.userID == userID:
-                user_new = False
 
-                user.activity_list[activity_value] = minimum_people
+        if userID in user_list:
+            user = user_list[userID]
+            user["activity_list"][activity_value] = minimum_people
 
-                if guildID not in user.guildID_list:
-                    for guild in Bot.guilds:  # update all guild IDs
-                        if guild.get_member(userID):
-                            user.guildID_list.append(guildID)
+            if guildID not in user["guildID_list"]:
+                for guild in Bot.guilds:  # update all guild IDs
+                    if guild.get_member(userID):
+                        user["guildID_list"].append(guildID)
 
-                await interaction.response.send_message(f"Added/Updated {activity} for {userName.global_name}")
-                break
-        
-        if user_new:
-            new_user = User(userID,[guildID],{activity_value: minimum_people})
-            user_list.append(new_user)
-            print(user_list[-1].userID)
-            await interaction.response.send_message(f"added {activity} to new user {userName.global_name}")
-                
+            await interaction.response.send_message(f"Added/Updated {activity} with {minimum_people} people for {userName.global_name}")
+
+        else:
+            user_list[userID] = create_user(userID,[guildID],{activity_value: minimum_people})
+
+            print(user_list[userID]["userID"])
+            await interaction.response.send_message(f"Added {activity} to new user {userName.global_name}")
 
         if DEVELOPEMENT:
             print("user_list:")
@@ -187,21 +196,21 @@ async def remove(interaction: discord.Interaction, activity: str):
     if interaction.channel_id == server_channel_list[interaction.guild_id]:
         userID = interaction.user.id
         userName = await Bot.fetch_user(userID)
-        
+
         activity_value = activity.upper()
 
-        for user in user_list:
-            if user.userID == userID:
-                if activity_value in user.activity_list:
-                    del user.activity_list[activity_value]
-                    await interaction.response.send_message(f"removed {activity} from {userName.global_name}")
-                else:
-                    await interaction.response.send_message(f"did not find {activity} from {userName.global_name}")
-                break
+        if userID in user_list:
+            user = user_list[userID]
+
+            if activity_value in user["activity_list"]:
+                del user["activity_list"][activity_value]
+                await interaction.response.send_message(f"Removed {activity} from {userName.global_name}")
+            else:
+                await interaction.response.send_message(f"Did not find {activity} for {userName.global_name}")
 
         if DEVELOPEMENT:
             print("\nuser_list:")
-            PrintUserList(user_list)
+            PrintUserList(user_list[userID])
 
 
 @Bot.tree.command(name="setchannel", description="Set the channel to be used in (Admins only)")
@@ -244,30 +253,56 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
 
 
 @tasks.loop(minutes=3)
-async def matchmaker(client: BotClient):
+async def matchmaker_old(client: BotClient):
     for guildID, channelID in server_channel_list.items():
-            try:
-                channel = client.get_channel(channelID)
-                if channel: 
-                    msg = await channel.send("matching now ...")
-                    
-            except:
-                print(f"no channel set for {client.get_guild(guildID)}")
+        try:
+            channel = client.get_channel(channelID)
+            if channel: 
+                msg = await channel.send("matching now ...")
+        except Exception:
+            print(f"no channel set for {client.get_guild(guildID)}")
     
     activities = []
     users = []
 
-    for user in user_list:
-        activities.append(list(user.activity_list.keys()))
-        users.append(user.userID)
+    for userID, user in user_list.items():
+        activities.append(list(user["activity_list"].keys()))
+        users.append(userID)
 
     all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities,users)
+
     print()
     for activity, count, who in all_matches:
         print(f"{activity} x {count} in {who}")
-    
 
 
+@tasks.loop(minutes=2)
+async def PublishDesires(users: dict, guilds: dict[int, int], client: BotClient):
+    # -- calculate matches and publish desires --
+    for guildID, channelID in guilds.items():
+        relevant_users = []
+        for userID, user in users.items():
+            if guildID in user["guildID_list"]:
+                relevant_users.append(userID)
+        
+        activities = []
+        for userID in relevant_users:
+            activities.append(list(users[userID]["activity_list"].keys()))
+
+        all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities,relevant_users)
+        matches = all_matches
+
+        channel = client.get_channel(channelID)
+        await channel.send(f"---------------------------")
+        for activity, count, who in all_matches:
+            info_string = (f"{activity} x {count} in {who}")
+            print(info_string)
+            msg = await channel.send(f"{activity} x {count}")
+
+    # -- ping matches --
+
+
+'''
 if DEVELOPEMENT: # hearbeat task
     @tasks.loop(minutes=1)
     async def list_of_interests(client: BotClient):
@@ -279,7 +314,7 @@ if DEVELOPEMENT: # hearbeat task
                     await msg.delete(delay=30)
             except:
                 print(f"no channel set for {client.get_guild(guildID)}")
-
+'''
 
 
 # -- run bot
