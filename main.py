@@ -80,11 +80,20 @@ def PrintUserList(list: dict):
         print(user)
 
 
-async def matchmaker_per_server(matchlist: list, users: dict):
-    for activity, count, match_IDs in matches:
-        needed_count = int('inf')
-        for users[match_IDs] in match_IDs:
-            needed_count = users[match_IDs]["activity_list"][activity]
+async def matchmaker_per_server(matchlist: list, users: dict) -> dict[int, list[str]]:
+    local_matches: dict[int, list[str]] = {}
+    for activity, count, match_ID in matchlist:
+
+        for match_ID in users:
+            if activity in users[match_ID]["activity_list"]:
+                needed_count = users[match_ID]["activity_list"][activity]
+                print(f"{activity}, have: {count}, need: {needed_count}")
+                if count >= needed_count:
+                    local_matches.setdefault(match_ID, []).append(activity)
+
+
+    return local_matches
+
             
 
 
@@ -158,7 +167,7 @@ async def add(interaction: discord.Interaction, activity: str, minimum_people: i
             user_list[userID] = create_user(userID,[guildID],{activity_value: minimum_people})
 
             print(user_list[userID]["userID"])
-            await interaction.response.send_message(f"Added {activity} to new user {userName.global_name}")
+            await interaction.response.send_message(f"Added {activity} with {minimum_people} people to new user {userName.global_name}")
 
         if DEVELOPEMENT:
             print("user_list:")
@@ -276,30 +285,43 @@ async def matchmaker_old(client: BotClient):
         print(f"{activity} x {count} in {who}")
 
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=1)
 async def PublishDesires(users: dict, guilds: dict[int, int], client: BotClient):
     # -- calculate matches and publish desires --
     for guildID, channelID in guilds.items():
-        relevant_users = []
+        users_of_guild = []
         for userID, user in users.items():
             if guildID in user["guildID_list"]:
-                relevant_users.append(userID)
+                users_of_guild.append(userID)
         
-        activities = []
-        for userID in relevant_users:
-            activities.append(list(users[userID]["activity_list"].keys()))
+        activities_of_user = []
+        for userID in users_of_guild:
+            activities_of_user.append(list(users[userID]["activity_list"].keys()))
 
-        all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities,relevant_users)
+        all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities_of_user,users_of_guild)
         matches = all_matches
 
         channel = client.get_channel(channelID)
-        await channel.send(f"---------------------------")
+        await channel.send(f"---------------------------\n-------local  matches------")
         for activity, count, who in all_matches:
             info_string = (f"{activity} x {count} in {who}")
+            print()
             print(info_string)
             msg = await channel.send(f"{activity} x {count}")
 
-    # -- ping matches --
+        # -- filter matches --
+        print("matachmaking")
+        local_matches = await matchmaker_per_server(matches, user_list)
+        activities_of_user = list(local_matches.values())
+        users_of_guild = list(local_matches.keys())
+        all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities_of_user,users_of_guild)
+
+        await channel.send(f"---------------------------\n-------global matches------")
+        for activity, count, who in all_matches:
+            info_string = (f"{activity} x {count} in {who}")
+            print()
+            print(info_string)
+            msg = await channel.send(f"{activity} x {count}")
 
 
 '''

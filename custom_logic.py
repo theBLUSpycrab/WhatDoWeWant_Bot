@@ -53,7 +53,7 @@ def TwoPointerSearch(list_a: list, list_b: list) -> list:
     return matches
 
 
-def multiway_match_strings(lists: List[List[str]], names: List[Any] = None) -> Tuple[List[Tuple[str, int, List[Any]]], List[str], List[str], int]:
+def multiway_match_strings(lists: List[List[Any]], names: List[Any] = None) -> Tuple[List[Tuple[str, int, List[Any]]], List[str], List[str], int]:
     """
     Find matches across N sorted lists of unique strings.
 
