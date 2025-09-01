@@ -4,8 +4,10 @@
 
 # -- imports
 import discord
-from discord import app_commands
+from discord import app_commands, ButtonStyle
 from discord.ext import tasks
+from discord.ui import View, Button
+from discord.ui.item import Item
 import classes as cl
 import custom_logic as clc
 import pandas as pd
@@ -32,7 +34,8 @@ FUZZY_ACTIVITY_NAME = True
 
 
 # -- globals --
-user_list: dict[int,dict[str,Any]] = {}
+user_list: dict[int,dict[str,Any]] = {} # dict[userID, dict[activity, minimumPeople]]
+
 server_channel_list = {}
 matches = []
 
@@ -66,6 +69,25 @@ class BotClient(discord.Client):
         if guild.system_channel:
             await guild.system_channel.send("Please set my working channel with '/setchannel' (Admins only)")
 
+class InterestWidget(View):
+    def __init__(self, activities):
+        super().__init__(timeout=None) # lives forever
+        for name, count, matchID in activities:
+            label = f"{name}  x{count}"
+            
+            button = Button(label=label, style=ButtonStyle.primary, custom_id=f"activity_{name}")
+            
+            button.callback = self.make_callback(name, count)
+
+            self.add_item(button)
+
+    async def on_error(self, interaction: discord.Interaction[discord.Client], error: Exception, item: Item[Any]) -> None:
+        return await super().on_error(interaction, error, item)
+    
+    def make_callback(self, activity, minimum_people):
+        async def callback(interaction):
+            await add(interaction, activity, minimum_people)
+        return callback
 
 # -- funcion definitions --
 def create_user(userID: int = None, guildID_list: list = None, activity_list: dict = None):
@@ -82,39 +104,25 @@ def PrintUserList(list: dict):
 
 async def matchmaker_per_server(matchlist: list, users: dict) -> dict[int, list[str]]:
     local_matches: dict[int, list[str]] = {}
+    print()
     for activity, count, match_ID in matchlist:
-
         for match_ID in users:
             if activity in users[match_ID]["activity_list"]:
                 needed_count = users[match_ID]["activity_list"][activity]
-                print(f"{activity}, have: {count}, need: {needed_count}")
+                print(f"{activity+",":10} have: {count:2}, need: {needed_count:2}")
                 if count >= needed_count:
                     local_matches.setdefault(match_ID, []).append(activity)
-
-
     return local_matches
 
-            
 
+async def postInterestWidget(matchlist: list, client: discord.Client, channelID: int):
+    channel = client.get_channel(channelID)
 
+    View = InterestWidget(activities=matchlist)
 
+    await channel.send(view=View)
+    print("Posted activities")
 
-Bot = BotClient()
-
-@Bot.tree.command(name="hello_world", description="Say hello")
-async def hello_world(interaction: discord.Interaction):
-    """
-    A Discord slash command that responds with a temporary acknowledgement message.
-    """
-    if interaction.channel_id == server_channel_list[interaction.guild_id]:
-        print("recieved hello")
-        await interaction.response.send_message(f"Acknowledged.\nDeleting in 10 seconds.")
-        response = await interaction.original_response()
-        await response.delete(delay=10)
-
-
-@Bot.tree.command(name="add", description="add an activity to the list")
-@app_commands.describe(activity="name of activity", minimum_people="minimum number of people")
 async def add(interaction: discord.Interaction, activity: str, minimum_people: int):
     """
     A Discord slash command that allows users to add or update activities in their personal activity list.
@@ -172,6 +180,26 @@ async def add(interaction: discord.Interaction, activity: str, minimum_people: i
         if DEVELOPEMENT:
             print("user_list:")
             PrintUserList(user_list)
+
+
+Bot = BotClient()
+
+@Bot.tree.command(name="hello_world", description="Say hello")
+async def hello_world(interaction: discord.Interaction):
+    """
+    A Discord slash command that responds with a temporary acknowledgement message.
+    """
+    if interaction.channel_id == server_channel_list[interaction.guild_id]:
+        print("recieved hello")
+        await interaction.response.send_message(f"Acknowledged.\nDeleting in 10 seconds.")
+        response = await interaction.original_response()
+        await response.delete(delay=10)
+
+
+@Bot.tree.command(name="add_new", description="add an activity to the list")
+@app_commands.describe(activity="name of activity", minimum_people="minimum number of people")
+async def add_new(interaction: discord.Interaction, activity: str, minimum_people: int):
+    await add(interaction=interaction, activity=activity, minimum_people=minimum_people)
 
 
 @Bot.tree.command(name="remove", description="remove an activity from the list")
@@ -288,6 +316,9 @@ async def matchmaker_old(client: BotClient):
 @tasks.loop(minutes=1)
 async def PublishDesires(users: dict, guilds: dict[int, int], client: BotClient):
     # -- calculate matches and publish desires --
+
+    successful_matches_dict: dict[int, dict[str, list]] = {} # dict[guildID, dict[activity, list(userIDs)]]
+
     for guildID, channelID in guilds.items():
         users_of_guild = []
         for userID, user in users.items():
@@ -299,29 +330,49 @@ async def PublishDesires(users: dict, guilds: dict[int, int], client: BotClient)
             activities_of_user.append(list(users[userID]["activity_list"].keys()))
 
         all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities_of_user,users_of_guild)
+
+        await postInterestWidget(all_matches,client=client,channelID=channelID)
+
         matches = all_matches
 
+        '''
         channel = client.get_channel(channelID)
         await channel.send(f"---------------------------\n-------local  matches------")
         for activity, count, who in all_matches:
             info_string = (f"{activity} x {count} in {who}")
             print()
             print(info_string)
-            msg = await channel.send(f"{activity} x {count}")
+            msg = await channel.send(f"{activity} x {count}")'''
 
         # -- filter matches --
-        print("matachmaking")
+        #print("matachmaking")
         local_matches = await matchmaker_per_server(matches, user_list)
         activities_of_user = list(local_matches.values())
         users_of_guild = list(local_matches.keys())
         all_matches, full_matches, partial_matches, max_count = clc.multiway_match_strings(activities_of_user,users_of_guild)
 
-        await channel.send(f"---------------------------\n-------global matches------")
+        
+        #await channel.send(f"---------------------------\n-------global matches------")
         for activity, count, who in all_matches:
+            '''
             info_string = (f"{activity} x {count} in {who}")
             print()
             print(info_string)
-            msg = await channel.send(f"{activity} x {count}")
+            msg = await channel.send(f"{activity} x {count}")'''
+        
+            successful_matches_dict.setdefault(guildID, {})[activity] = who
+
+    # -- debug, to be made fancy --
+    guilds_to_post_in = tuple(successful_matches_dict.keys())
+    for guild_to_post_in in guilds_to_post_in:
+        channel_to_post_in = server_channel_list[guild_to_post_in]
+        channel = client.get_channel(channel_to_post_in)
+        #await channel.send(f"Found matches for:")
+        print(f"\nMatches:")
+        for activity in tuple(successful_matches_dict[guild_to_post_in].keys()):
+            #await channel.send(f"{activity}")
+            print(f"{activity:10} for {successful_matches_dict[guild_to_post_in][activity]}")
+
 
 
 '''
